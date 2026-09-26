@@ -3,6 +3,7 @@
 // Render 같은 곳에 올려서 HTTP로 서비스하면, PC/폰 어디서든 Claude가 접속 가능합니다.
 
 import express from "express";
+import crypto from "node:crypto";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { z } from "zod";
@@ -23,6 +24,35 @@ if (!NAVER_CLIENT_ID || !NAVER_CLIENT_SECRET) {
 if (!["classic", "apihub"].includes(NAVER_API_MODE)) {
   console.error(`[설정 오류] NAVER_API_MODE는 "classic" 또는 "apihub"여야 합니다. (현재: ${NAVER_API_MODE})`);
   process.exit(1);
+}
+
+// ── 1-1. 접근 토큰 — 이 서버 주소를 알아도 토큰 없이는 아무도 못 부르게 막는 열쇠 ──
+const MCP_ACCESS_TOKEN = process.env.MCP_ACCESS_TOKEN;
+if (!MCP_ACCESS_TOKEN) {
+  console.error("[설정 오류] MCP_ACCESS_TOKEN 환경변수가 없습니다. (보안을 위해 필수)");
+  process.exit(1);
+}
+
+// 문자열 길이로 눈치채는 것도 막기 위해 timingSafeEqual로 비교
+function isValidToken(candidate) {
+  if (!candidate) return false;
+  const a = Buffer.from(candidate);
+  const b = Buffer.from(MCP_ACCESS_TOKEN);
+  if (a.length !== b.length) return false;
+  return crypto.timingSafeEqual(a, b);
+}
+
+// 아주 단순한 분당 요청 횟수 제한 — 토큰이 혹시 새어나가도 하루 할당량이
+// 한 번에 소진되는 걸 막는 2차 방어선입니다. (IP별로 메모리에 카운트)
+const RATE_LIMIT_MAX = 20; // 분당 최대 요청 수
+const requestLog = new Map(); // ip -> [timestamp, ...]
+function isRateLimited(ip) {
+  const now = Date.now();
+  const windowStart = now - 60_000;
+  const timestamps = (requestLog.get(ip) || []).filter((t) => t > windowStart);
+  timestamps.push(now);
+  requestLog.set(ip, timestamps);
+  return timestamps.length > RATE_LIMIT_MAX;
 }
 
 // ── 2. 모드별 요청 정보 조립 ────────────────────────────────────────────
@@ -154,12 +184,30 @@ function createServer() {
 
 // ── 5. Express + Streamable HTTP 전송 (Claude가 폰/PC에서 접속하는 경로) ──
 const app = express();
+app.set("trust proxy", 1); // Render는 프록시 뒤에 있어서, 이게 있어야 req.ip가 실제 요청자 IP로 잡힘
 app.use(express.json());
 
 // Render의 헬스체크/콜드스타트 확인용 — 배포 후 살아있는지 확인하는 용도
 app.get("/health", (_req, res) => res.status(200).send("ok"));
 
 app.post("/mcp", async (req, res) => {
+  // ── 보안 1: 토큰 검사 ──
+  // Authorization: Bearer <토큰> 헤더, 또는 URL 뒤에 ?token=<토큰> 둘 다 허용
+  // (Claude 커넥터 설정 화면에 따라 헤더를 못 넣는 경우 URL 방식을 쓰면 됩니다)
+  const authHeader = req.get("authorization") || "";
+  const bearerToken = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : null;
+  const queryToken = typeof req.query.token === "string" ? req.query.token : null;
+
+  if (!isValidToken(bearerToken) && !isValidToken(queryToken)) {
+    return res.status(401).json({ error: "유효하지 않은 접근 토큰입니다." });
+  }
+
+  // ── 보안 2: 분당 요청 횟수 제한 ──
+  const clientIp = req.ip || req.socket.remoteAddress || "unknown";
+  if (isRateLimited(clientIp)) {
+    return res.status(429).json({ error: "요청이 너무 많습니다. 잠시 후 다시 시도하세요." });
+  }
+
   // 매 요청마다 새 서버/전송 인스턴스를 만드는 "stateless" 모드.
   // 다중 사용자·서버리스 환경(Render 등)에서 가장 안전한 방식입니다.
   const server = createServer();

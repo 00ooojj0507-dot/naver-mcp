@@ -30,7 +30,10 @@ npm start
    - `NAVER_API_MODE`
    - `NAVER_CLIENT_ID`
    - `NAVER_CLIENT_SECRET`
-6. 배포 완료 후 Claude 커스텀 커넥터에 `https://<서비스이름>.onrender.com/mcp` 등록
+   - `MCP_ACCESS_TOKEN` (아무도 모르는 긴 임의의 문자열 — `openssl rand -hex 32`로 생성 추천)
+6. 배포 완료 후 Claude 커스텀 커넥터에 아래 주소 등록:
+   - 헤더 설정이 가능하면: URL은 `https://<서비스이름>.onrender.com/mcp` + `Authorization: Bearer <MCP_ACCESS_TOKEN>` 헤더 추가
+   - 헤더 설정이 안 보이면: URL 뒤에 토큰을 직접 붙여서 `https://<서비스이름>.onrender.com/mcp?token=<MCP_ACCESS_TOKEN>`
 
 ## 4. 네이버 API 조사 결과 — 반드시 확인할 주의사항
 
@@ -54,6 +57,11 @@ npm start
 - 하루 호출 한도 25,000회 → 초과 시 429
 - HTTP(비암호화)로 호출하면 403 — 반드시 HTTPS
 
-**(4) Render 무료 플랜 특성 (폰에서 쓸 때 체감되는 부분)**
+**(4) 접근 토큰 보안 (이번에 추가됨)**
+- `/mcp`는 이제 `MCP_ACCESS_TOKEN`이 일치해야만 응답합니다. URL만 안다고 아무나 못 씁니다.
+- 분당 20회로 요청 횟수도 제한해서, 토큰이 혹시 새어나가도 하루 25,000회 할당량이 한 번에 털리지 않게 막아둡니다.
+- 토큰이 코드에 그대로 적혀 있으면 의미가 없으니, 반드시 Render의 Environment 변수로만 넣고 GitHub에는 절대 올리지 마세요.
+
+**(5) Render 무료 플랜 특성 (폰에서 쓸 때 체감되는 부분)**
 - 일정 시간 요청이 없으면 서버가 잠들어서, 오랜만에 폰에서 호출하면 첫 응답이 수십 초 걸릴 수 있습니다.
 - 유료 플랜으로 올리거나, 외부에서 주기적으로 `/health`를 핑(ping)하면 완화됩니다.
